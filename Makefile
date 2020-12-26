@@ -6,7 +6,7 @@ CC?=gcc
 #CFLAGS = -Wall $(OPTI) `pkg-config $(PKGS) --cflags` --std=c99 -g
 CFLAGS=-Wall $(OPTI) -g
 #LDFLAGS = `pkg-config $(PKGS) --libs` -lGL -lm
-LDFLAGS=-lGL -lm -lSDL2 -lscecore -lsceutils
+LDFLAGS=-lGL -lm -lSDL2 -lscecore -lsceutils `pkg-config --libs glew`
 
 all: $(EXEC)
 

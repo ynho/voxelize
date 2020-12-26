@@ -4,14 +4,18 @@
 #include <math.h>
 #include <time.h>
 #include <SDL2/SDL.h>
-#include <SDL2/SDL_opengl.h>
+/* #include <SDL2/SDL_opengl.h> */
 #include <SCE/core/SCECore.h>
+/* #include <GL/gl.h> */
+#include <GL/glew.h>
+
 
 
 struct mesh {
     int *vertices;
     SCEvertices *verticesf;
-    SCEindices *indices;
+    SCEvertices *normals;
+    mdcindices_t *indices;
     int *v_flags;
     int n_vertices;
     int n_indices;
@@ -21,6 +25,8 @@ struct mesh {
 
 static void init_mesh (struct mesh *mesh) {
     mesh->vertices = NULL;
+    mesh->verticesf = NULL;
+    mesh->normals = NULL;
     mesh->indices = NULL;
     mesh->v_flags = NULL;
     mesh->n_vertices = 0;
@@ -56,6 +62,11 @@ static void transpose (float m[16]) {
 #define SCREEN_W 1600
 #define SCREEN_H 900
 
+#define VOX_W 260
+#define VOX_H 260
+#define VOX_D 100
+#define NUM_VOX (VOX_W*VOX_H*VOX_D)
+
 /* #define RAD (0.0174532925) */
 static void setup_view (int rx, int ry, int dist) {
     glMatrixMode(GL_MODELVIEW);
@@ -63,7 +74,7 @@ static void setup_view (int rx, int ry, int dist) {
     glTranslatef (0.0, 0.0, -dist);
     glRotatef (rx, 1.0, 0.0, 0.0);
     glRotatef (ry, 0.0, 0.0, 1.0);
-    /* glTranslatef (-10.0, -10.0, 0); */
+    glTranslatef (-VOX_W / 2.0, -VOX_H / 2.0, 0);
 
     glMatrixMode(GL_PROJECTION);
     glLoadIdentity();
@@ -72,14 +83,6 @@ static void setup_view (int rx, int ry, int dist) {
     transpose (matrix);
     glLoadMatrixf (matrix);
 }
-
-#define GRID_W 4
-#define GRID_H 4
-#define GRID_D 4
-/* maximum 4 vertices per cell */
-#define n_vert (GRID_W * GRID_H * GRID_D * 4)
-#define n_ind ((GRID_W - 1) * (GRID_H - 1) * 2 * 3)
-
 
 
 static void draw (struct mesh *mesh, int use_float) {
@@ -90,10 +93,10 @@ static void draw (struct mesh *mesh, int use_float) {
                    0x00000055,
                    0x00500055};
     /* glPolygonMode(GL_FRONT, GL_LINE); */
-    glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+    /* glPolygonMode(GL_FRONT_AND_BACK, GL_LINE); */
     glBegin(GL_QUADS);
-    for (int i = 0; i < mesh->n_indices; i++) {
-        int k = mesh->indices[i];
+    for (uint32_t i = 0; i < mesh->n_indices; i++) {
+        mdcindices_t k = mesh->indices[i];
         int c = 0x00222222;
         if (mesh->v_flags) {
             for (int j = 0; j < 6; j++) {
@@ -102,7 +105,9 @@ static void draw (struct mesh *mesh, int use_float) {
                 }
             }
         }
-        glColor3ub (c >> 16, c >> 8 & 0xFF, c & 0xFF);
+        /* glColor3ub (c >> 16, c >> 8 & 0xFF, c & 0xFF); */
+        /* float *nor = &mesh->normals[k * 3]; */
+        /* glNormal3f (nor[0], nor[1], nor[2]); */
         if (use_float) {
             float *vertex = &mesh->verticesf[k * 3];
             glVertex3f (vertex[0], vertex[1], vertex[2]);
@@ -139,8 +144,84 @@ static void printb (unsigned long n) {
 
 #define OFFSET(x, y, z, w, h) ((w) * ((z) * (h) + (y)) + (x))
 
-void generate_hermite (uint8_t *bitmap, SCE_SMDCHermiteData *hermite) {
-    memset (bitmap, 0, 4*4*4);
+#define N_OCTAVES 5
+
+static const int n_octaves = N_OCTAVES;
+#define OC_VOXELS0 256
+#define OC_VOXELS1 79
+#define OC_VOXELS2 33
+#define OC_VOXELS3 12
+#define OC_VOXELS4 3
+static const double octave_freq[N_OCTAVES] = {
+    1.0 / OC_VOXELS0,
+    1.0 / OC_VOXELS1,
+    1.0 / OC_VOXELS2,
+    1.0 / OC_VOXELS3,
+    1.0 / OC_VOXELS4
+};
+#define COEF0 38.0
+#define COEF1 17.0
+#define COEF2 12.0
+#define COEF3 3.9
+#define COEF4 0.17
+static const double octave_coef[N_OCTAVES] = {
+    COEF0, COEF1, COEF2, COEF3, COEF4
+};
+
+static const double ground_level = 4.0;
+
+static double density (long x, long y, long z)
+{
+    double p[3], p2[3];
+    int i;
+    double derp = (-z + ground_level) * 0.25;
+
+    p[0] = x; p[1] = y; p[2] = z;
+
+    int num_octaves = 5;
+
+    for (i = 0; i < num_octaves; i++) {
+        SCE_Vector3_Operator1v (p2, = octave_freq[i] *, p);
+        derp += SCE_Noise_Smooth3D (p2) * octave_coef[i];
+    }
+    return derp;
+}
+
+static unsigned char voxel_density (long x, long y, long z)
+{
+    float d = (double)SCE_Math_Clampf (density(x, y, z), -1.0, 1.0);
+    return (d * 0.5 + 0.5) * 255;
+}
+
+static void generate_voxels (uint8_t *voxels) {
+#if 1
+    for (int z = 1; z < VOX_D - 1; z++) {
+        for (int y = 1; y < VOX_H - 1; y++) {
+            for (int x = 1; x < VOX_W - 1; x++) {
+                voxels[OFFSET(x, y, z, VOX_W, VOX_H)] = voxel_density (x, y, z);
+                /* printf ("le %d\n", voxels[OFFSET(x, y, z, VOX_W, VOX_H)]); */
+                /* voxels[OFFSET(x, y, z, VOX_W, VOX_H)] = z > 10 ? 0 : 200; */
+            }
+        }
+    }
+#else
+    for (int x = 2; x < VOX_W - 2; x++) {
+        for (int y = 2; y < VOX_H - 2; y++) {
+            int r = ((float)rand() / RAND_MAX) * (VOX_D * 0.1) + 10;
+            for (int z = 1; z < VOX_D; z++) {
+                /* voxels[OFFSET(x, y, z, VOX_W, VOX_H)] = (uint8_t) (density (x, y, z) * 255.0); */
+                voxels[OFFSET(x, y, z, VOX_W, VOX_H)] = z > r ? 0 : 200;
+            }
+        }
+    }
+#endif
+}
+
+void generate_hermite (uint8_t *voxels, uint8_t *bitmap, SCE_SMDCHermiteData *hermite) {
+    for (int i = 0; i < NUM_VOX; i++)
+        bitmap[i / 8] |= (voxels[i] > 127 ? 1 : 0) << (i % 8);
+#if 0
+    memset (bitmap, 0, NUM_VOX);
     /* bitmap[2] = 1 << 5 | 1 << 6; */
     /* bitmap[5] = 1 << 1 | 1 << 2; */
     bitmap[2] = 1 << 5;
@@ -148,6 +229,63 @@ void generate_hermite (uint8_t *bitmap, SCE_SMDCHermiteData *hermite) {
     bitmap[5] = 1 << 1;
     bitmap[4] = 1 << 6;
     /* SCE_Vector4_Set (hermite[OFFSET(1, 0, 1, 4, 4)].normalw[1], 0.0, -1.0, 0.0, 0.5 */
+#endif
+}
+
+
+char* load_file (const char *fname) {
+    char *data = NULL;
+    FILE *fp = fopen(fname, "r");
+    long size;
+    fseek (fp, 0, SEEK_END);
+    size = ftell (fp);
+    fseek (fp, 0, SEEK_SET);
+    data = malloc (size + 1);
+    fread (data, 1, size, fp);
+    fclose (fp);
+    data[size] = 0;
+    return data;
+}
+
+int mk_shader (const char *fname, int type) {
+    int s = glCreateShader (type);
+    char *src = load_file (fname);
+    glShaderSource (s, 1, &src, NULL);
+    glCompileShader (s);
+    int st;
+    glGetShaderiv (s, GL_COMPILE_STATUS, &st);
+    if (st != GL_TRUE) {
+        char buf[512] = {0};
+        int size = 512;
+        glGetShaderInfoLog (s, size, &size, buf);
+        fprintf (stderr, "no compilo %s:\n%s\n", fname, buf);
+        exit (42);
+    }
+    return s;
+}
+
+int load_shader (void) {
+    int types[] = {GL_VERTEX_SHADER, GL_GEOMETRY_SHADER, GL_FRAGMENT_SHADER};
+    char *src[] = {"vs.glsl", "gs.glsl", "ps.glsl"};
+    /* int types[] = {GL_VERTEX_SHADER, GL_FRAGMENT_SHADER}; */
+    /* char *src[] = {"vs.glsl", "ps.glsl"}; */
+
+    int p = glCreateProgram ();
+    for (int i = 0; i < sizeof types / sizeof *types; i++) {
+        int s = mk_shader (src[i], types[i]);
+        glAttachShader (p, s);
+    }
+    glLinkProgram (p);
+    int st;
+    glGetProgramiv (p, GL_LINK_STATUS, &st);
+    if (st != GL_TRUE) {
+        char buf[512] = {0};
+        int size = 512;
+        glGetProgramInfoLog (p, size, &size, buf);
+        fprintf (stderr, "no linko:\n%s\n", buf);
+        exit (42);
+    }
+    return p;
 }
 
 int main (void) {
@@ -159,7 +297,9 @@ int main (void) {
     Window = SDL_CreateWindow ("LE MAO", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
                                ww, wh, SDL_WINDOW_OPENGL);
     glContext = SDL_GL_CreateContext (Window);
+    (void)glContext;
     SDL_ShowWindow (Window);
+    glewInit ();
 
     glClearColor (0.0f, 0.0f, 0.0f, 0.0f);
     glClear (GL_COLOR_BUFFER_BIT);
@@ -168,51 +308,57 @@ int main (void) {
     int running = 1;
 
     srand(1547917722);
-
+    SCE_Init_Core (stderr, 0);
     glEnable(GL_DEPTH_TEST);
 
-    int i;
-    int grid_vertices[n_vert * 3];
-    int grid_indices[n_ind];
-    int grid_v_flags[n_vert];
     struct mesh mesh;
 
     init_mesh (&mesh);
 
-    /* mesh.vertices = grid_vertices; */
-    /* mesh.indices = grid_indices; */
-    /* mesh.v_flags = grid_v_flags; */
-    /* mesh.n_vertices = n_vert; */
-    /* mesh.n_indices = n_ind; */
-
     {
         SCE_SMDCGenerator gen;
-        uint8_t *bitmap = malloc (4 * 4 * 4);
-        SCE_SMDCHermiteData *hermite = malloc (4 * 4 * 4 * sizeof *hermite);
+        uint8_t *bitmap = malloc (NUM_VOX);
+        SCE_SMDCHermiteData *hermite = malloc (NUM_VOX * sizeof *hermite);
+        uint8_t *voxels = malloc (NUM_VOX);
 
-        generate_hermite (bitmap, hermite);
+        memset (bitmap, 0, NUM_VOX);
+        memset (voxels, 0, NUM_VOX);
+        generate_voxels (voxels);
+        generate_hermite (voxels, bitmap, hermite);
 
         SCE_MDC_Init (&gen);
-        SCE_MDC_Build (&gen, 4, 4, 4);
+        SCE_MDC_Build (&gen, VOX_W, VOX_H, VOX_D);
 
         mesh.n_vertices = SCE_MDC_ComputeNumVertices (&gen, bitmap);
-        printf ("\n--\n");
         mesh.verticesf = malloc (mesh.n_vertices * sizeof(float) * 3);
+        mesh.normals = malloc (mesh.n_vertices * sizeof(float) * 3);
         SCE_MDC_GenerateVertices (&gen, bitmap, hermite, mesh.verticesf);
         mesh.n_indices = SCE_MDC_ComputeNumIndices (&gen, bitmap);
         mesh.indices = malloc (mesh.n_indices * sizeof *mesh.indices);
-        mesh.n_indices = SCE_MDC_GenerateIndices (&gen, bitmap, mesh.indices);
-        printf ("\n");
+        size_t test_i = SCE_MDC_GenerateIndices (&gen, bitmap, mesh.indices);
+        if (mesh.n_indices != test_i) {
+            printf ("omg wtf %d %d\n", mesh.n_indices, test_i);
+        }
+        /* SCE_Geometry_ComputeQuadsNormals (mesh.verticesf, mesh.indices, mesh.n_vertices, */
+        /*                                   mesh.n_indices, mesh.normals); */
+        /* printf ("\n"); */
         printf ("n_indices = %d\n", mesh.n_indices);
         printf ("n_vertices = %d\n", mesh.n_vertices);
         /* for (int i = 0; i < mesh.n_indices; i++) { */
         /*     printf ("%d ", mesh.indices[i]); */
         /* } */
         /* printf ("\n"); */
+        
     }
 
+    int p = load_shader ();
+
+    glEnable (GL_CULL_FACE);
+    /* glCullFace (GL_FRONT); */
+    glUseProgram (p);
+
     int prev_x = 0, prev_y = 0, ry = 0, rx = 0, mouse_pressed = 0;
-    float dist = 10.0;
+    float dist = VOX_D;
     while (running){
         while (SDL_PollEvent (&ev)) {
             switch (ev.type) {
