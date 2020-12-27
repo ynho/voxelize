@@ -194,48 +194,51 @@ static unsigned char voxel_density (long x, long y, long z)
 }
 
 static void generate_voxels (uint8_t *voxels) {
-#if 1
     for (int z = 2; z < VOX_D - 2; z++) {
         for (int y = 2; y < VOX_H - 2; y++) {
-            for (int x = 2; x < VOX_W - 2; x++) {
+            for (int x = 2; x < VOX_W - 2; x++)
                 voxels[OFFSET(x, y, z, VOX_W, VOX_H)] = voxel_density (x, y, z);
-                /* printf ("le %d\n", voxels[OFFSET(x, y, z, VOX_W, VOX_H)]); */
-                /* voxels[OFFSET(x, y, z, VOX_W, VOX_H)] = z > 10 ? 0 : 200; */
-            }
         }
     }
-#else
-    for (int x = 2; x < VOX_W - 2; x++) {
-        for (int y = 2; y < VOX_H - 2; y++) {
-            int r = ((float)rand() / RAND_MAX) * (VOX_D * 0.1) + 10;
-            for (int z = 1; z < VOX_D; z++) {
-                /* voxels[OFFSET(x, y, z, VOX_W, VOX_H)] = (uint8_t) (density (x, y, z) * 255.0); */
-                voxels[OFFSET(x, y, z, VOX_W, VOX_H)] = z > r ? 0 : 200;
-            }
-        }
-    }
-#endif
 }
+
 
 static void compute_gradient (SCE_TVector3 gradient, uint8_t *densities,
                               int i, int j, int k, SCEulong w, SCEulong h)
 {
-#define coord(x, y, z) (w * (h * (z) + (y)) + (x))
-    gradient[0] = densities[coord (i-1, j, k)] - densities[coord (i+1, j, k)];
-    gradient[1] = densities[coord (i, j-1, k)] - densities[coord (i, j+1, k)];
-    gradient[2] = densities[coord (i, j, k-1)] - densities[coord (i, j, k+1)];
-#undef coord
+    gradient[0] = densities[OFFSET (i-1, j, k, w, h)] - densities[OFFSET (i+1, j, k, w, h)];
+    gradient[1] = densities[OFFSET (i, j-1, k, w, h)] - densities[OFFSET (i, j+1, k, w, h)];
+    gradient[2] = densities[OFFSET (i, j, k-1, w, h)] - densities[OFFSET (i, j, k+1, w, h)];
 }
 
 static float middle (uint8_t a, uint8_t b) {
-    return (127.0 - a) / ((float)b - a);
+#if 0
+    return (127.0 - (float)a) / ((float)b - a);
+#else
+    float w = (127.0 - (float)a) / ((float)b - a);
+    if (w < 0.0)
+        return SCE_Math_Clampf (1.0 - w, 0.0, 1.0);
+    else
+        return SCE_Math_Clampf (w, 0.0, 1.0);
+#endif
 }
 
 void generate_hermite (uint8_t *voxels, uint8_t *bitmap, SCE_SMDCHermiteData *hermite) {
+#if 1
+    for (int z = 5; z < VOX_D - 5; z++)
+        for (int y = 5; y < VOX_H - 5; y++)
+            for (int x = 5; x < VOX_W - 5; x++) {
+                size_t o = OFFSET(x, y, z, VOX_W, VOX_H);
+                bitmap[o / 8] |= (voxels[o] > 127 ? 1 : 0) << (o % 8);
+            }
+#else
     for (int i = 0; i < NUM_VOX; i++)
         bitmap[i / 8] |= (voxels[i] > 127 ? 1 : 0) << (i % 8);
+#endif
 
     float *gradients = malloc (3 * NUM_VOX * sizeof *gradients);
+    for (int i = 0; i < NUM_VOX; i++)
+        SCE_Vector3_Set (&gradients[i * 3], 0.0, 0.0, 0.0);
 
     for (int z = 1; z < VOX_D - 1; z++) {
         for (int y = 1; y < VOX_H - 1; y++) {
@@ -248,28 +251,33 @@ void generate_hermite (uint8_t *voxels, uint8_t *bitmap, SCE_SMDCHermiteData *he
                 hermite[offset].normalw[1][3] = w;
                 w = middle (voxels[offset], voxels[OFFSET(x, y, z+1, VOX_W, VOX_H)]);
                 hermite[offset].normalw[2][3] = w;
-                compute_gradient (&gradients[OFFSET(x, y, z, VOX_W, VOX_H)], voxels, x, y, z, VOX_W, VOX_H);
-                SCE_Vector3_Operator1 (&gradients[OFFSET(x, y, z, VOX_W, VOX_H)], *=, 0.5);
+                compute_gradient (&gradients[OFFSET(x, y, z, VOX_W, VOX_H) * 3], voxels, x, y, z, VOX_W, VOX_H);
+                SCE_Vector3_Operator1 (&gradients[OFFSET(x, y, z, VOX_W, VOX_H) * 3], *=, 0.5);
             }
         }
     }
-    for (int z = 1; z < VOX_D - 1; z++) {
-        for (int y = 1; y < VOX_H - 1; y++) {
-            for (int x = 1; x < VOX_W - 1; x++) {
+    for (int z = 1; z < VOX_D - 2; z++) {
+        for (int y = 1; y < VOX_H - 2; y++) {
+            for (int x = 1; x < VOX_W - 2; x++) {
                 float *o = &gradients[OFFSET(x, y, z, VOX_W, VOX_H) * 3];
                 float *ox = &gradients[OFFSET(x+1, y, z, VOX_W, VOX_H) * 3];
                 float *oy = &gradients[OFFSET(x, y+1, z, VOX_W, VOX_H) * 3];
                 float *oz = &gradients[OFFSET(x, y, z+1, VOX_W, VOX_H) * 3];
                 SCE_SMDCHermiteData *h = &hermite[OFFSET(x, y, z, VOX_W, VOX_H)];
                 SCE_Vector3_Operator2v (h->normalw[0], =, o, +, ox);
-                SCE_Vector3_Normalize (h->normalw[0]);
+
+                if (SCE_Vector3_Length (h->normalw[0]) > 0.0000001)
+                    SCE_Vector3_Normalize (h->normalw[0]);
                 SCE_Vector3_Operator2v (h->normalw[1], =, o, +, oy);
-                SCE_Vector3_Normalize (h->normalw[1]);
+                if (SCE_Vector3_Length (h->normalw[1]) > 0.0000001)
+                    SCE_Vector3_Normalize (h->normalw[1]);
                 SCE_Vector3_Operator2v (h->normalw[2], =, o, +, oz);
-                SCE_Vector3_Normalize (h->normalw[2]);
+                if (SCE_Vector3_Length (h->normalw[2]) > 0.0000001)
+                    SCE_Vector3_Normalize (h->normalw[2]);
             }
         }
     }
+    free (gradients);
 #if 0
     memset (bitmap, 0, NUM_VOX);
     /* bitmap[2] = 1 << 5 | 1 << 6; */
