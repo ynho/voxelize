@@ -10,7 +10,6 @@
 #include <GL/glew.h>
 
 
-
 struct mesh {
     int *vertices;
     SCEvertices *verticesf;
@@ -35,8 +34,6 @@ static void init_mesh (struct mesh *mesh) {
     mesh->i_edgestart = 0;
 }
 
-
-
 static void proj (float m[16], float a, float r, float n, float f) {
     m[5] = 1.0f / tanf (a * 0.5f);
     m[0] = m[5] / r;
@@ -47,7 +44,6 @@ static void proj (float m[16], float a, float r, float n, float f) {
     m[1] = m[2] = m[3] = m[4] = m[6] = m[7] =
         m[8] = m[9] = m[12] = m[13] = m[15] = 0.0f;
 }
-
 
 static void transpose (float m[16]) {
     float t;
@@ -68,13 +64,13 @@ static void transpose (float m[16]) {
 #define NUM_VOX (VOX_W*VOX_H*VOX_D)
 
 /* #define RAD (0.0174532925) */
-static void setup_view (int rx, int ry, int dist) {
+static void setup_view (int rx, int ry, int vox_w, int vox_h, int dist) {
     glMatrixMode(GL_MODELVIEW);
     glLoadIdentity();
     glTranslatef (0.0, 0.0, -dist);
     glRotatef (rx, 1.0, 0.0, 0.0);
     glRotatef (ry, 0.0, 0.0, 1.0);
-    glTranslatef (-VOX_W / 2.0, -VOX_H / 2.0, 0);
+    glTranslatef (-vox_w / 2.0, -vox_h / 2.0, 0);
 
     glMatrixMode(GL_PROJECTION);
     glLoadIdentity();
@@ -290,6 +286,24 @@ void generate_hermite (uint8_t *voxels, uint8_t *bitmap, SCE_SMDCHermiteData *he
 #endif
 }
 
+uint32_t readint (void) {
+    uint32_t n;
+    fread (&n, 1, sizeof n, stdin);
+    return n;
+}
+
+static void load_hermite (uint8_t **bitmap, SCE_SMDCHermiteData **hermite,
+                          uint32_t *vox_w, uint32_t *vox_h, uint32_t *vox_d) {
+    *vox_w = readint ();
+    *vox_h = readint ();
+    *vox_d = readint ();
+    int n_vox = *vox_w * *vox_h * *vox_d;
+    *bitmap = malloc (n_vox / 8 + 1);
+    fread (*bitmap, 1, n_vox / 8 + 1, stdin);
+    *hermite = malloc (n_vox * sizeof **hermite);
+    fread (*hermite, sizeof **hermite, n_vox, stdin);
+}
+
 
 char* load_file (const char *fname) {
     char *data = NULL;
@@ -346,10 +360,73 @@ int load_shader (void) {
     return p;
 }
 
+static int get_config (uint8_t *bitmap, int x, int y, int z, int w, int h) {
+    int config = 0;
+    size_t c;
+#define FETCH_BIT(dx, dy, dz, s)                                        \
+    (c = OFFSET(x + dx, y + dy, z + dz, w, h), (bitmap[c / 8] >> c % 8 & 1) << s)
+    config |= FETCH_BIT(0, 0, 0, 0);
+    config |= FETCH_BIT(1, 0, 0, 1);
+    config |= FETCH_BIT(0, 1, 0, 2);
+    config |= FETCH_BIT(1, 1, 0, 3);
+    config |= FETCH_BIT(0, 0, 1, 4);
+    config |= FETCH_BIT(1, 0, 1, 5);
+    config |= FETCH_BIT(0, 1, 1, 6);
+    config |= FETCH_BIT(1, 1, 1, 7);
+    return config;
+}
+
+static int zero(float a) { return SCE_Math_IsZero (a); }
+
+static void draw_normal (SCE_SMDCHermiteData *hermite, int x, int y, int z, size_t offset, int axis) {
+    SCE_TVector3 p1, p2;
+    SCE_Vector3_Set (p1, x, y, z);
+    p1[axis] += hermite[offset].normalw[axis][3];
+    SCE_Vector3_Operator2v (p2, =, p1, +, hermite[offset].normalw[axis]);
+
+#if 0
+    {
+        SCE_TVector3 nor;
+        SCE_Vector3_Copy (nor, hermite[offset].normalw[axis]);
+        if (zero(nor[0]) && zero(nor[1]) && zero(nor[2]))
+            printf ("OH BLYAT\n");
+    }
+#endif
+
+    glBegin (GL_LINES);
+    glColor3f (1.0, 1.0, 1.0);
+    glVertex3f (p1[0], p1[1], p1[2]);
+    glColor3f (1.0, 0.0, 0.0);
+    glVertex3f (p2[0], p2[1], p2[2]);
+    glEnd ();
+}
+
+static void draw_hermite (uint8_t *bitmap, SCE_SMDCHermiteData *hermite,
+                          uint32_t vox_w, uint32_t vox_h, uint32_t vox_d) {
+
+    for (int z = 0; z < vox_d - 1; z++) {
+        for (int y = 0; y < vox_h - 1; y++) {
+            for (int x = 0; x < vox_w - 1; x++) {
+                int config = get_config (bitmap, x, y, z, vox_w, vox_h);
+                if (config != 0 && config != 255) {
+                    size_t offset = OFFSET(x, y, z, vox_w, vox_h);
+                    if ((config & 1) != ((config >> 1) & 1))
+                        draw_normal (hermite, x, y, z, offset, 0);
+                    if ((config & 1) != ((config >> 2) & 1))
+                        draw_normal (hermite, x, y, z, offset, 1);
+                    if ((config & 1) != ((config >> 4) & 1))
+                        draw_normal (hermite, x, y, z, offset, 2);
+                }
+            }
+        }
+    }
+}
+
 int main (void) {
     SDL_Window *Window = NULL;
     SDL_GLContext glContext;
     const int ww = SCREEN_W, wh = SCREEN_H;
+    uint32_t vox_w, vox_h, vox_d = VOX_D;
 
     SDL_Init (SDL_INIT_VIDEO);
     Window = SDL_CreateWindow ("LE MAO", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
@@ -373,19 +450,27 @@ int main (void) {
 
     init_mesh (&mesh);
 
+    uint8_t *bitmap;
+    SCE_SMDCHermiteData *hermite;
     {
         SCE_SMDCGenerator gen;
-        uint8_t *bitmap = malloc (NUM_VOX);
-        SCE_SMDCHermiteData *hermite = malloc (NUM_VOX * sizeof *hermite);
-        uint8_t *voxels = malloc (NUM_VOX);
 
+#if 0
+        uint8_t *voxels;
+        vox_w = VOX_W, vox_h = VOX_H, vox_d = VOX_D;
+        hermite = malloc (NUM_VOX * sizeof *hermite);
+        bitmap = malloc (NUM_VOX);
+        voxels = malloc (NUM_VOX);
         memset (bitmap, 0, NUM_VOX);
         memset (voxels, 0, NUM_VOX);
         generate_voxels (voxels);
         generate_hermite (voxels, bitmap, hermite);
+#else
+        load_hermite (&bitmap, &hermite, &vox_w, &vox_h, &vox_d);
+#endif
 
         SCE_MDC_Init (&gen);
-        SCE_MDC_Build (&gen, VOX_W, VOX_H, VOX_D);
+        SCE_MDC_Build (&gen, vox_w, vox_h, vox_d);
 
         mesh.n_vertices = SCE_MDC_ComputeNumVertices (&gen, bitmap);
         mesh.verticesf = malloc (mesh.n_vertices * sizeof(float) * 3);
@@ -411,12 +496,11 @@ int main (void) {
 
     int p = load_shader ();
 
-    glEnable (GL_CULL_FACE);
+    /* glEnable (GL_CULL_FACE); */
     /* glCullFace (GL_FRONT); */
-    glUseProgram (p);
 
     int prev_x = 0, prev_y = 0, ry = 0, rx = 0, mouse_pressed = 0;
-    float dist = VOX_D;
+    float dist = 4.0;//vox_d;
     while (running){
         while (SDL_PollEvent (&ev)) {
             switch (ev.type) {
@@ -459,13 +543,15 @@ int main (void) {
         }
         glClear (GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-        setup_view (rx, ry, dist);
+        setup_view (rx, ry, vox_w, vox_h, dist);
 
+        glUseProgram (p);
         draw (&mesh, 1);
+        /* glUseProgram (0); */
+        /* draw_hermite (bitmap, hermite, vox_w, vox_h, vox_d); */
 
         SDL_GL_SwapWindow (Window);
     }
 
     return 0;
-
 }
