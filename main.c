@@ -16,8 +16,8 @@ struct mesh {
     SCEvertices *normals;
     mdcindices_t *indices;
     int *v_flags;
-    int n_vertices;
-    int n_indices;
+    unsigned int n_vertices;
+    unsigned int n_indices;
     int v_edgestart;
     int i_edgestart;
 };
@@ -32,6 +32,17 @@ static void init_mesh (struct mesh *mesh) {
     mesh->n_indices = 0;
     mesh->v_edgestart = 0;
     mesh->i_edgestart = 0;
+}
+
+static void duplicate_mesh (struct mesh *new, struct mesh *old) {
+    size_t vsize = old->n_vertices * 3 * sizeof *new->verticesf;
+    size_t isize = old->n_indices * sizeof *new->indices;
+    new->verticesf = malloc (vsize);
+    new->indices = malloc (isize);
+    memcpy (new->verticesf, old->verticesf, vsize);
+    memcpy (new->indices, old->indices, isize);
+    new->n_vertices = old->n_vertices;
+    new->n_indices = old->n_indices;
 }
 
 static void proj (float m[16], float a, float r, float n, float f) {
@@ -55,12 +66,12 @@ static void transpose (float m[16]) {
     t = m[11]; m[11] = m[14]; m[14] = t;
 }
 
-#define SCREEN_W 1600
-#define SCREEN_H 900
+#define SCREEN_W 2600
+#define SCREEN_H 1900
 
-#define VOX_W 260
-#define VOX_H 260
-#define VOX_D 100
+#define VOX_W 60
+#define VOX_H 60
+#define VOX_D 30
 #define NUM_VOX (VOX_W*VOX_H*VOX_D)
 
 /* #define RAD (0.0174532925) */
@@ -81,7 +92,7 @@ static void setup_view (int rx, int ry, int vox_w, int vox_h, int dist) {
 }
 
 
-static void draw (struct mesh *mesh, int use_float) {
+static void draw (struct mesh *mesh, int use_float, int mode) {
     int coul[6] = {0x00550000,
                    0x00555000,
                    0x00005500,
@@ -89,8 +100,7 @@ static void draw (struct mesh *mesh, int use_float) {
                    0x00000055,
                    0x00500055};
     /* glPolygonMode(GL_FRONT, GL_LINE); */
-    /* glPolygonMode(GL_FRONT_AND_BACK, GL_LINE); */
-    glBegin(GL_QUADS);
+    glBegin(mode);
     for (uint32_t i = 0; i < mesh->n_indices; i++) {
         mdcindices_t k = mesh->indices[i];
         int c = 0x00222222;
@@ -135,7 +145,6 @@ static void printb (unsigned long n) {
         putc ((n >> (i*2 + 0) & 1) ? '1' : '0', stdout);
     }
 }
-
 #endif
 
 #define OFFSET(x, y, z, w, h) ((w) * ((z) * (h) + (y)) + (x))
@@ -164,15 +173,18 @@ static const double octave_coef[N_OCTAVES] = {
     COEF0, COEF1, COEF2, COEF3, COEF4
 };
 
-static const double ground_level = 4.0;
+static const double ground_level = 1.0;
 
 static double density (long x, long y, long z)
 {
     double p[3], p2[3];
     int i;
-    double derp = (-z + ground_level) * 0.25;
+    z += 20;
+    double derp = (-z + ground_level) * 0.725;
 
+    x += 200;
     p[0] = x; p[1] = y; p[2] = z;
+    p[0] += SCE_Noise_Smooth3D (p) * 2.2;
 
     int num_octaves = 5;
 
@@ -190,9 +202,9 @@ static unsigned char voxel_density (long x, long y, long z)
 }
 
 static void generate_voxels (uint8_t *voxels) {
-    for (int z = 2; z < VOX_D - 2; z++) {
-        for (int y = 2; y < VOX_H - 2; y++) {
-            for (int x = 2; x < VOX_W - 2; x++)
+    for (int z = 0; z < VOX_D; z++) {
+        for (int y = 0; y < VOX_H; y++) {
+            for (int x = 0; x < VOX_W; x++)
                 voxels[OFFSET(x, y, z, VOX_W, VOX_H)] = voxel_density (x, y, z);
         }
     }
@@ -219,8 +231,8 @@ static float middle (uint8_t a, uint8_t b) {
 #endif
 }
 
-void generate_hermite (uint8_t *voxels, uint8_t *bitmap, SCE_SMDCHermiteData *hermite) {
-#if 1
+void generate_hermite (uint8_t *voxels, uint8_t *bitmap, SCE_SDCHermiteData *hermite) {
+#if 0
     for (int z = 5; z < VOX_D - 5; z++)
         for (int y = 5; y < VOX_H - 5; y++)
             for (int x = 5; x < VOX_W - 5; x++) {
@@ -228,8 +240,11 @@ void generate_hermite (uint8_t *voxels, uint8_t *bitmap, SCE_SMDCHermiteData *he
                 bitmap[o / 8] |= (voxels[o] > 127 ? 1 : 0) << (o % 8);
             }
 #else
-    for (int i = 0; i < NUM_VOX; i++)
+    for (int i = 0; i < NUM_VOX; i++) {
         bitmap[i / 8] |= (voxels[i] > 127 ? 1 : 0) << (i % 8);
+        for (int j = 0; j < 3; j++)
+            SCE_Vector4_Set (hermite[i].normalw[j], 0.0, 0.0, 1.0, 0.5);
+    }
 #endif
 
     float *gradients = malloc (3 * NUM_VOX * sizeof *gradients);
@@ -259,7 +274,7 @@ void generate_hermite (uint8_t *voxels, uint8_t *bitmap, SCE_SMDCHermiteData *he
                 float *ox = &gradients[OFFSET(x+1, y, z, VOX_W, VOX_H) * 3];
                 float *oy = &gradients[OFFSET(x, y+1, z, VOX_W, VOX_H) * 3];
                 float *oz = &gradients[OFFSET(x, y, z+1, VOX_W, VOX_H) * 3];
-                SCE_SMDCHermiteData *h = &hermite[OFFSET(x, y, z, VOX_W, VOX_H)];
+                SCE_SDCHermiteData *h = &hermite[OFFSET(x, y, z, VOX_W, VOX_H)];
                 SCE_Vector3_Operator2v (h->normalw[0], =, o, +, ox);
 
                 if (SCE_Vector3_Length (h->normalw[0]) > 0.0000001)
@@ -292,7 +307,7 @@ uint32_t readint (void) {
     return n;
 }
 
-static void load_hermite (uint8_t **bitmap, SCE_SMDCHermiteData **hermite,
+static void load_hermite (uint8_t **bitmap, SCE_SDCHermiteData **hermite,
                           uint32_t *vox_w, uint32_t *vox_h, uint32_t *vox_d) {
     *vox_w = readint ();
     *vox_h = readint ();
@@ -322,7 +337,7 @@ char* load_file (const char *fname) {
 int mk_shader (const char *fname, int type) {
     int s = glCreateShader (type);
     char *src = load_file (fname);
-    glShaderSource (s, 1, &src, NULL);
+    glShaderSource (s, 1, (const GLchar * const*)&src, NULL);
     glCompileShader (s);
     int st;
     glGetShaderiv (s, GL_COMPILE_STATUS, &st);
@@ -378,20 +393,11 @@ static int get_config (uint8_t *bitmap, int x, int y, int z, int w, int h) {
 
 static int zero(float a) { return SCE_Math_IsZero (a); }
 
-static void draw_normal (SCE_SMDCHermiteData *hermite, int x, int y, int z, size_t offset, int axis) {
+static void draw_normal (SCE_SDCHermiteData *hermite, int x, int y, int z, size_t offset, int axis) {
     SCE_TVector3 p1, p2;
     SCE_Vector3_Set (p1, x, y, z);
     p1[axis] += hermite[offset].normalw[axis][3];
     SCE_Vector3_Operator2v (p2, =, p1, +, hermite[offset].normalw[axis]);
-
-#if 0
-    {
-        SCE_TVector3 nor;
-        SCE_Vector3_Copy (nor, hermite[offset].normalw[axis]);
-        if (zero(nor[0]) && zero(nor[1]) && zero(nor[2]))
-            printf ("OH BLYAT\n");
-    }
-#endif
 
     glBegin (GL_LINES);
     glColor3f (1.0, 1.0, 1.0);
@@ -401,7 +407,7 @@ static void draw_normal (SCE_SMDCHermiteData *hermite, int x, int y, int z, size
     glEnd ();
 }
 
-static void draw_hermite (uint8_t *bitmap, SCE_SMDCHermiteData *hermite,
+static void draw_hermite (uint8_t *bitmap, SCE_SDCHermiteData *hermite,
                           uint32_t vox_w, uint32_t vox_h, uint32_t vox_d) {
 
     for (int z = 0; z < vox_d - 1; z++) {
@@ -420,6 +426,23 @@ static void draw_hermite (uint8_t *bitmap, SCE_SMDCHermiteData *hermite,
             }
         }
     }
+}
+
+
+static void triangulate (struct mesh *mesh) {
+    size_t num = 6 * mesh->n_indices / 4;
+    uint32_t *indices = malloc (6 * mesh->n_indices / 4 * sizeof *indices);
+    for (int i = 0, j = 0; i < mesh->n_indices; i += 4, j += 6) {
+        indices[j] = mesh->indices[i];
+        indices[j+1] = mesh->indices[i+1];
+        indices[j+2] = mesh->indices[i+2];
+        indices[j+3] = mesh->indices[i];
+        indices[j+4] = mesh->indices[i+2];
+        indices[j+5] = mesh->indices[i+3];
+    }
+    free(mesh->indices);
+    mesh->indices=indices;
+    mesh->n_indices = num;
 }
 
 int main (void) {
@@ -451,11 +474,10 @@ int main (void) {
     init_mesh (&mesh);
 
     uint8_t *bitmap;
-    SCE_SMDCHermiteData *hermite;
     {
-        SCE_SMDCGenerator gen;
+        SCE_SDCHermiteData *hermite;
 
-#if 0
+#if 1
         uint8_t *voxels;
         vox_w = VOX_W, vox_h = VOX_H, vox_d = VOX_D;
         hermite = malloc (NUM_VOX * sizeof *hermite);
@@ -469,9 +491,11 @@ int main (void) {
         load_hermite (&bitmap, &hermite, &vox_w, &vox_h, &vox_d);
 #endif
 
+#if 0
+        /* supposedly manifold but actually fucking isnt */
+        SCE_SMDCGenerator gen;
         SCE_MDC_Init (&gen);
         SCE_MDC_Build (&gen, vox_w, vox_h, vox_d);
-
         mesh.n_vertices = SCE_MDC_ComputeNumVertices (&gen, bitmap);
         mesh.verticesf = malloc (mesh.n_vertices * sizeof(float) * 3);
         mesh.normals = malloc (mesh.n_vertices * sizeof(float) * 3);
@@ -479,6 +503,20 @@ int main (void) {
         mesh.n_indices = SCE_MDC_ComputeNumIndices (&gen, bitmap);
         mesh.indices = malloc (mesh.n_indices * sizeof *mesh.indices);
         size_t test_i = SCE_MDC_GenerateIndices (&gen, bitmap, mesh.indices);
+#else
+        /* classic dual contouring (not manifold but proud not to be) */
+        SCE_SDCGenerator gen;
+        SCE_DC_Init (&gen);
+        SCE_DC_Build (&gen, vox_w, vox_h, vox_d);
+        mesh.n_vertices = SCE_DC_ComputeNumVertices (&gen, bitmap);
+        mesh.verticesf = malloc (mesh.n_vertices * sizeof(float) * 3);
+        mesh.normals = malloc (mesh.n_vertices * sizeof(float) * 3);
+        SCE_DC_GenerateVertices (&gen, bitmap, hermite, mesh.verticesf);
+        mesh.n_indices = SCE_DC_ComputeNumIndices (&gen, bitmap);
+        mesh.indices = malloc (mesh.n_indices * sizeof *mesh.indices);
+        size_t test_i = SCE_DC_GenerateIndices (&gen, bitmap, mesh.indices);
+#endif
+
         if (mesh.n_indices != test_i) {
             printf ("omg wtf %d %d\n", mesh.n_indices, test_i);
         }
@@ -494,13 +532,40 @@ int main (void) {
         
     }
 
+#if 1
+    /* simplify */
+    struct mesh simp;
+    {
+        SCE_SQEMMesh qm;
+
+        init_mesh (&simp);
+        duplicate_mesh (&simp, &mesh);
+        triangulate (&simp);
+
+        SCE_QEMD_Init (&qm);
+        SCE_QEMD_SetMaxVertices (&qm, simp.n_vertices);
+        SCE_QEMD_SetMaxIndices (&qm, simp.n_indices);
+        SCE_QEMD_Build (&qm);
+        /* float *vert_r = malloc (simp.n_vertices * 3 * sizeof *vert_r); */
+        /* uint32_t *ind_r = malloc (simp.n_indices * sizeof *ind_r); */
+        SCE_QEMD_Set (&qm, simp.verticesf, NULL, NULL, NULL, simp.indices, simp.n_vertices, simp.n_indices);
+        SCE_QEMD_Process (&qm, simp.n_vertices * 0.85 + 400);
+        SCE_QEMD_Get (&qm, simp.verticesf, NULL, NULL, simp.indices, &simp.n_vertices, &simp.n_indices);
+        printf ("\nn_indices = %d\n", simp.n_indices);
+        printf ("n_vertices = %d\n", simp.n_vertices);
+        /* the decimator conveniently takes care of the unused vertices generated by the MDC */
+    }
+#endif
+
     int p = load_shader ();
 
-    /* glEnable (GL_CULL_FACE); */
+    glEnable (GL_CULL_FACE);
     /* glCullFace (GL_FRONT); */
+    glClearColor (0.5, 0.5, 0.5, 0.0);
 
     int prev_x = 0, prev_y = 0, ry = 0, rx = 0, mouse_pressed = 0;
     float dist = 4.0;//vox_d;
+    int wireframe = 0;
     while (running){
         while (SDL_PollEvent (&ev)) {
             switch (ev.type) {
@@ -512,6 +577,13 @@ int main (void) {
 				case SDLK_ESCAPE:
 					running = 0;
 					break;
+                case SDLK_w:
+                    wireframe = !wireframe;
+                    if (wireframe)
+                        glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+                    else
+                        glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+                    break;
 				default:
 					break;
                 }
@@ -546,7 +618,10 @@ int main (void) {
         setup_view (rx, ry, vox_w, vox_h, dist);
 
         glUseProgram (p);
-        draw (&mesh, 1);
+        glTranslatef (-30.0, 0.0, 0.0);
+        draw (&mesh, 1, GL_QUADS);
+        glTranslatef (60.0, 0.0, 0.0);
+        draw (&simp, 1, GL_TRIANGLES);
         /* glUseProgram (0); */
         /* draw_hermite (bitmap, hermite, vox_w, vox_h, vox_d); */
 
