@@ -74,6 +74,8 @@ static void transpose (float m[16]) {
 #define VOX_D 30
 #define NUM_VOX (VOX_W*VOX_H*VOX_D)
 
+#define SIMP 0
+
 /* #define RAD (0.0174532925) */
 static void setup_view (int rx, int ry, int vox_w, int vox_h, int dist) {
     glMatrixMode(GL_MODELVIEW);
@@ -232,20 +234,11 @@ static float middle (uint8_t a, uint8_t b) {
 }
 
 void generate_hermite (uint8_t *voxels, uint8_t *bitmap, SCE_SDCHermiteData *hermite) {
-#if 0
-    for (int z = 5; z < VOX_D - 5; z++)
-        for (int y = 5; y < VOX_H - 5; y++)
-            for (int x = 5; x < VOX_W - 5; x++) {
-                size_t o = OFFSET(x, y, z, VOX_W, VOX_H);
-                bitmap[o / 8] |= (voxels[o] > 127 ? 1 : 0) << (o % 8);
-            }
-#else
     for (int i = 0; i < NUM_VOX; i++) {
         bitmap[i / 8] |= (voxels[i] > 127 ? 1 : 0) << (i % 8);
         for (int j = 0; j < 3; j++)
             SCE_Vector4_Set (hermite[i].normalw[j], 0.0, 0.0, 1.0, 0.5);
     }
-#endif
 
     float *gradients = malloc (3 * NUM_VOX * sizeof *gradients);
     for (int i = 0; i < NUM_VOX; i++)
@@ -477,7 +470,7 @@ int main (void) {
     {
         SCE_SDCHermiteData *hermite;
 
-#if 1
+#if 0
         uint8_t *voxels;
         vox_w = VOX_W, vox_h = VOX_H, vox_d = VOX_D;
         hermite = malloc (NUM_VOX * sizeof *hermite);
@@ -532,7 +525,7 @@ int main (void) {
         
     }
 
-#if 1
+#if SIMP
     /* simplify */
     struct mesh simp;
     {
@@ -549,7 +542,7 @@ int main (void) {
         /* float *vert_r = malloc (simp.n_vertices * 3 * sizeof *vert_r); */
         /* uint32_t *ind_r = malloc (simp.n_indices * sizeof *ind_r); */
         SCE_QEMD_Set (&qm, simp.verticesf, NULL, NULL, NULL, simp.indices, simp.n_vertices, simp.n_indices);
-        SCE_QEMD_Process (&qm, simp.n_vertices * 0.85 + 400);
+        SCE_QEMD_Process (&qm, simp.n_vertices * 0.85);
         SCE_QEMD_Get (&qm, simp.verticesf, NULL, NULL, simp.indices, &simp.n_vertices, &simp.n_indices);
         printf ("\nn_indices = %d\n", simp.n_indices);
         printf ("n_vertices = %d\n", simp.n_vertices);
@@ -618,10 +611,14 @@ int main (void) {
         setup_view (rx, ry, vox_w, vox_h, dist);
 
         glUseProgram (p);
+#if SIMP
         glTranslatef (-30.0, 0.0, 0.0);
         draw (&mesh, 1, GL_QUADS);
         glTranslatef (60.0, 0.0, 0.0);
         draw (&simp, 1, GL_TRIANGLES);
+#else
+        draw (&mesh, 1, GL_QUADS);
+#endif
         /* glUseProgram (0); */
         /* draw_hermite (bitmap, hermite, vox_w, vox_h, vox_d); */
 
