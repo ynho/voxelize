@@ -14,24 +14,28 @@ struct mesh {
     int *vertices;
     SCEvertices *verticesf;
     SCEvertices *normals;
+    SCE_TDCMaterial *materials;
     mdcindices_t *indices;
     int *v_flags;
     unsigned int n_vertices;
     unsigned int n_indices;
     int v_edgestart;
     int i_edgestart;
+    int mode;
 };
 
 static void init_mesh (struct mesh *mesh) {
     mesh->vertices = NULL;
     mesh->verticesf = NULL;
     mesh->normals = NULL;
+    mesh->materials = NULL;
     mesh->indices = NULL;
     mesh->v_flags = NULL;
     mesh->n_vertices = 0;
     mesh->n_indices = 0;
     mesh->v_edgestart = 0;
     mesh->i_edgestart = 0;
+    mesh->mode = GL_QUADS;
 }
 
 static void duplicate_mesh (struct mesh *new, struct mesh *old) {
@@ -69,9 +73,9 @@ static void transpose (float m[16]) {
 #define SCREEN_W 2600
 #define SCREEN_H 1900
 
-#define VOX_W 60
-#define VOX_H 60
-#define VOX_D 30
+#define VOX_W 160
+#define VOX_H 160
+#define VOX_D 80
 #define NUM_VOX (VOX_W*VOX_H*VOX_D)
 
 #define SIMP 0
@@ -94,7 +98,7 @@ static void setup_view (int rx, int ry, int vox_w, int vox_h, int dist) {
 }
 
 
-static void draw (struct mesh *mesh, int use_float, int mode) {
+static void draw (struct mesh *mesh, int use_float) {
     int coul[6] = {0x00550000,
                    0x00555000,
                    0x00005500,
@@ -102,7 +106,7 @@ static void draw (struct mesh *mesh, int use_float, int mode) {
                    0x00000055,
                    0x00500055};
     /* glPolygonMode(GL_FRONT, GL_LINE); */
-    glBegin(mode);
+    glBegin (mesh->mode);
     for (uint32_t i = 0; i < mesh->n_indices; i++) {
         mdcindices_t k = mesh->indices[i];
         int c = 0x00222222;
@@ -116,6 +120,8 @@ static void draw (struct mesh *mesh, int use_float, int mode) {
         /* glColor3ub (c >> 16, c >> 8 & 0xFF, c & 0xFF); */
         /* float *nor = &mesh->normals[k * 3]; */
         /* glNormal3f (nor[0], nor[1], nor[2]); */
+        if (mesh->materials)
+            glColor3ub (mesh->materials[k], 0, 0);
         if (use_float) {
             float *vertex = &mesh->verticesf[k * 3];
             glVertex3f (vertex[0], vertex[1], vertex[2]);
@@ -175,18 +181,28 @@ static const double octave_coef[N_OCTAVES] = {
     COEF0, COEF1, COEF2, COEF3, COEF4
 };
 
-static const double ground_level = 1.0;
+static const double ground_level = 10.0;
 
 static double density (long x, long y, long z)
 {
     double p[3], p2[3];
     int i;
-    z += 20;
+    /* z -= 20; */
     double derp = (-z + ground_level) * 0.725;
 
-    x += 200;
+    /* x += 200; */
     p[0] = x; p[1] = y; p[2] = z;
-    p[0] += SCE_Noise_Smooth3D (p) * 2.2;
+    SCE_Vector3_Copy (p2, p);
+    SCE_Vector3_Operator1 (p2, *=, 0.003);
+    float koi = SCE_Noise_Smooth3D (p2) * 72.0;
+    SCE_Vector3_Operator1 (p, +=, koi);
+    
+    /* p[0] += SCE_Noise_Smooth3D (p2) * 8.0; */
+    /* p2[0] += 10.0; */
+    /* p2[1] += 7.0; */
+    /* p[1] += SCE_Noise_Smooth3D (p2) * 8.0; */
+    /* SCE_Vector3_Operator1 (p2, +=, 20.0); */
+    /* p[2] += SCE_Noise_Smooth3D (p2) * 8.0; */
 
     int num_octaves = 5;
 
@@ -203,11 +219,14 @@ static unsigned char voxel_density (long x, long y, long z)
     return (d * 0.5 + 0.5) * 255;
 }
 
-static void generate_voxels (uint8_t *voxels) {
+static void generate_voxels (uint8_t *voxels, SCE_TDCMaterial *materials) {
     for (int z = 0; z < VOX_D; z++) {
         for (int y = 0; y < VOX_H; y++) {
-            for (int x = 0; x < VOX_W; x++)
-                voxels[OFFSET(x, y, z, VOX_W, VOX_H)] = voxel_density (x, y, z);
+            for (int x = 0; x < VOX_W; x++) {
+                size_t offset = OFFSET(x, y, z, VOX_W, VOX_H);
+                voxels[offset] = voxel_density (x, y, z);
+                materials[offset] = y > 60 ? 100 : 10;
+            }
         }
     }
 }
@@ -424,18 +443,19 @@ static void draw_hermite (uint8_t *bitmap, SCE_SDCHermiteData *hermite,
 
 static void triangulate (struct mesh *mesh) {
     size_t num = 6 * mesh->n_indices / 4;
-    uint32_t *indices = malloc (6 * mesh->n_indices / 4 * sizeof *indices);
+    uint32_t *indices = malloc (num * sizeof *indices);
     for (int i = 0, j = 0; i < mesh->n_indices; i += 4, j += 6) {
         indices[j] = mesh->indices[i];
         indices[j+1] = mesh->indices[i+1];
-        indices[j+2] = mesh->indices[i+2];
-        indices[j+3] = mesh->indices[i];
+        indices[j+2] = mesh->indices[i+3];
+        indices[j+3] = mesh->indices[i+1];
         indices[j+4] = mesh->indices[i+2];
         indices[j+5] = mesh->indices[i+3];
     }
     free(mesh->indices);
     mesh->indices=indices;
     mesh->n_indices = num;
+    mesh->mode = GL_TRIANGLES;
 }
 
 int main (void) {
@@ -470,15 +490,19 @@ int main (void) {
     {
         SCE_SDCHermiteData *hermite;
 
-#if 0
+#if 1
         uint8_t *voxels;
+        SCE_TDCMaterial *materials;
         vox_w = VOX_W, vox_h = VOX_H, vox_d = VOX_D;
         hermite = malloc (NUM_VOX * sizeof *hermite);
         bitmap = malloc (NUM_VOX);
         voxels = malloc (NUM_VOX);
+        materials = malloc (NUM_VOX * sizeof *materials);
         memset (bitmap, 0, NUM_VOX);
         memset (voxels, 0, NUM_VOX);
-        generate_voxels (voxels);
+        for (int i = 0; i < NUM_VOX; i++)
+            materials[i] = SCE_DC_UNDEFINED_MATERIAL;
+        generate_voxels (voxels, materials);
         generate_hermite (voxels, bitmap, hermite);
 #else
         load_hermite (&bitmap, &hermite, &vox_w, &vox_h, &vox_d);
@@ -503,11 +527,12 @@ int main (void) {
         SCE_DC_Build (&gen, vox_w, vox_h, vox_d);
         mesh.n_vertices = SCE_DC_ComputeNumVertices (&gen, bitmap);
         mesh.verticesf = malloc (mesh.n_vertices * sizeof(float) * 3);
-        mesh.normals = malloc (mesh.n_vertices * sizeof(float) * 3);
+        /* mesh.normals = malloc (mesh.n_vertices * sizeof(float) * 3); */
+        mesh.materials = malloc (mesh.n_vertices * sizeof *mesh.materials);
         SCE_DC_GenerateVertices (&gen, bitmap, hermite, mesh.verticesf);
         mesh.n_indices = SCE_DC_ComputeNumIndices (&gen, bitmap);
         mesh.indices = malloc (mesh.n_indices * sizeof *mesh.indices);
-        size_t test_i = SCE_DC_GenerateIndices (&gen, bitmap, mesh.indices);
+        size_t test_i = SCE_DC_GenerateIndicesAndMaterials (&gen, bitmap, materials, mesh.indices, mesh.materials);
 #endif
 
         if (mesh.n_indices != test_i) {
@@ -522,7 +547,7 @@ int main (void) {
         /*     printf ("%d ", mesh.indices[i]); */
         /* } */
         /* printf ("\n"); */
-        
+        triangulate (&mesh);
     }
 
 #if SIMP
@@ -533,7 +558,7 @@ int main (void) {
 
         init_mesh (&simp);
         duplicate_mesh (&simp, &mesh);
-        triangulate (&simp);
+        /* triangulate (&simp); */
 
         SCE_QEMD_Init (&qm);
         SCE_QEMD_SetMaxVertices (&qm, simp.n_vertices);
@@ -542,7 +567,7 @@ int main (void) {
         /* float *vert_r = malloc (simp.n_vertices * 3 * sizeof *vert_r); */
         /* uint32_t *ind_r = malloc (simp.n_indices * sizeof *ind_r); */
         SCE_QEMD_Set (&qm, simp.verticesf, NULL, NULL, NULL, simp.indices, simp.n_vertices, simp.n_indices);
-        SCE_QEMD_Process (&qm, simp.n_vertices * 0.85);
+        SCE_QEMD_Process (&qm, simp.n_vertices * 0.8);
         SCE_QEMD_Get (&qm, simp.verticesf, NULL, NULL, simp.indices, &simp.n_vertices, &simp.n_indices);
         printf ("\nn_indices = %d\n", simp.n_indices);
         printf ("n_vertices = %d\n", simp.n_vertices);
@@ -613,11 +638,11 @@ int main (void) {
         glUseProgram (p);
 #if SIMP
         glTranslatef (-30.0, 0.0, 0.0);
-        draw (&mesh, 1, GL_QUADS);
+        draw (&mesh, 1);
         glTranslatef (60.0, 0.0, 0.0);
-        draw (&simp, 1, GL_TRIANGLES);
+        draw (&simp, 1);
 #else
-        draw (&mesh, 1, GL_QUADS);
+        draw (&mesh, 1);
 #endif
         /* glUseProgram (0); */
         /* draw_hermite (bitmap, hermite, vox_w, vox_h, vox_d); */
