@@ -14,7 +14,7 @@ void main (void)
     // vec3 norm = normalize(normal[0] + normal[1] + normal[2]);
     // nor = normal[0];
     nor = norm;
-    vec3 colour = gl_FrontColorIn[2].x > 0.1 ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 1.0, 0.0);
+    vec3 colour = gl_FrontColorIn[2].x > 0.5 ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 1.0, 0.0);
     gl_Position = mvp[0] * gl_PositionIn[0];
     col = colour;
     EmitVertex();
