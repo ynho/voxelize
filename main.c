@@ -9,6 +9,18 @@
 /* #include <GL/gl.h> */
 #include <GL/glew.h>
 
+#define SCREEN_W 2600
+#define SCREEN_H 1900
+
+#define VOX_W 160
+#define VOX_H 160
+#define VOX_D 80
+#define NUM_VOX (VOX_W*VOX_H*VOX_D)
+
+#define MATERIAL_TEST 0
+#define LOAD_FROM_FILE 0
+
+#define SIMP 0
 
 struct mesh {
     int *vertices;
@@ -74,16 +86,6 @@ static void transpose (float m[16]) {
     t = m[7]; m[7] = m[13]; m[13] = t;
     t = m[11]; m[11] = m[14]; m[14] = t;
 }
-
-#define SCREEN_W 2600
-#define SCREEN_H 1900
-
-#define VOX_W 160
-#define VOX_H 160
-#define VOX_D 80
-#define NUM_VOX (VOX_W*VOX_H*VOX_D)
-
-#define SIMP 1
 
 /* #define RAD (0.0174532925) */
 static void setup_view (int rx, int ry, int vox_w, int vox_h, int dist) {
@@ -164,7 +166,6 @@ static void printb (unsigned long n) {
 
 #define N_OCTAVES 5
 
-static const int n_octaves = N_OCTAVES;
 #define OC_VOXELS0 256
 #define OC_VOXELS1 79
 #define OC_VOXELS2 33
@@ -194,7 +195,7 @@ static double density (long x, long y, long z)
     int i;
     /* z -= 20; */
     double derp = (-z + ground_level) * 0.725;
-    return derp;
+    /* return derp; */
     /* x += 200; */
     p[0] = x; p[1] = y; p[2] = z;
     SCE_Vector3_Copy (p2, p);
@@ -527,7 +528,9 @@ int main (void) {
     {
         SCE_SDCHermiteData *hermite;
 
-#if 1
+#if LOAD_FROM_FILE
+        load_hermite (&bitmap, &hermite, &vox_w, &vox_h, &vox_d);
+#else
         uint8_t *voxels;
         SCE_TDCMaterial *materials;
         vox_w = VOX_W, vox_h = VOX_H, vox_d = VOX_D;
@@ -541,8 +544,6 @@ int main (void) {
             materials[i] = SCE_DC_UNDEFINED_MATERIAL;
         generate_voxels (voxels, materials);
         generate_hermite (voxels, bitmap, hermite);
-#else
-        load_hermite (&bitmap, &hermite, &vox_w, &vox_h, &vox_d);
 #endif
 
 #if 0
@@ -569,6 +570,7 @@ int main (void) {
         SCE_DC_GenerateVertices (&gen, bitmap, hermite, mesh.verticesf);
         mesh.n_indices = SCE_DC_ComputeNumIndices (&gen, bitmap);
         mesh.indices = malloc (mesh.n_indices * sizeof *mesh.indices);
+#if MATERIAL_TEST
         size_t test_i = SCE_DC_GenerateIndicesAndMaterials (&gen, bitmap, materials, mesh.indices, mesh.materials);
         int lol = 0;
         for (int i = 0; i < mesh.n_vertices; i++) {
@@ -576,10 +578,13 @@ int main (void) {
                 lol++;
         }
         printf ("lol : %d\n");
+#else
+        size_t test_i = SCE_DC_GenerateIndices (&gen, bitmap, mesh.indices);
+#endif
 #endif
 
         if (mesh.n_indices != test_i) {
-            printf ("omg wtf %d %d\n", mesh.n_indices, test_i);
+            printf ("omg wtf %d %ld\n", mesh.n_indices, test_i);
         }
         /* SCE_Geometry_ComputeQuadsNormals (mesh.verticesf, mesh.indices, mesh.n_vertices, */
         /*                                   mesh.n_indices, mesh.normals); */
